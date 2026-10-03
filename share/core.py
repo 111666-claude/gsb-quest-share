@@ -1,8 +1,4 @@
-"""任务共享：参与人数上限、贡献幂等、进度封顶与过期失效。
-
-缺陷：参与人数上限不生效、同一请求重复贡献、进度不封顶、
-过期任务继续生效、每次查询扫描全部共享任务。
-"""
+"""任务共享：参与人数上限、贡献幂等、进度封顶与过期失效。"""
 
 
 class Shared:
@@ -10,26 +6,43 @@ class Shared:
         self.max_members = max_members
         self.ttl_ms = ttl_ms
         self.tasks = {}
-        self.memo = set()
         self.scanned = 0
 
     def share(self, owner, quest, target, now_ms):
-        self.tasks[quest] = {"target": target, "count": 0, "members": {owner}, "at": now_ms}
+        self.tasks[quest] = {
+            "target": target,
+            "count": 0,
+            "members": {owner},
+            "seen": set(),
+            "at": now_ms,
+        }
         return True
 
-    def contribute(self, member, quest, amount, now_ms, req_id):
-        self.scanned += len(self.tasks)
+    def _live(self, quest, now_ms):
+        self.scanned += 1
         task = self.tasks.get(quest)
         if task is None:
+            return None
+        if now_ms - task["at"] >= self.ttl_ms:
+            del self.tasks[quest]
+            return None
+        return task
+
+    def contribute(self, member, quest, amount, now_ms, req_id):
+        task = self._live(quest, now_ms)
+        if task is None:
             return False
-        self.memo.add(req_id)
+        if req_id in task["seen"]:
+            return False
+        if member not in task["members"] and len(task["members"]) >= self.max_members:
+            return False
+        task["seen"].add(req_id)
         task["members"].add(member)
-        task["count"] += amount
+        task["count"] = min(task["target"], task["count"] + amount)
         return True
 
     def done(self, quest, now_ms):
-        self.scanned += len(self.tasks)
-        task = self.tasks.get(quest)
+        task = self._live(quest, now_ms)
         return task is not None and task["count"] >= task["target"]
 
     def scanned_count(self):
